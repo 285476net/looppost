@@ -76,7 +76,7 @@ def add_channel(message):
         
         channels_col.update_one(
             {"channel_id": target_id},
-            {"$set": {"active": True, "daily_limit": 10, "interval_min": 1}},
+            {"$set": {"active": True, "daily_limit": 20, "interval_min": 1}},
             upsert=True
         )
         bot.reply_to(message, f"✅ Channel `{target_id}` ကို စနစ်ထဲ ထည့်သွင်းပြီးပါပြီ။")
@@ -125,7 +125,7 @@ def auto_post_loop():
         
         # ၁။ အချိန်အပိုင်းအခြား (Time Slots) ပြင်ရန်
         # ဒီစာရင်းထဲက နာရီတွေရောက်မှ Bot က အလုပ်လုပ်ပါမယ်
-        peak_hours = [8, 12, 18, 19, 20, 21, 22] 
+        peak_hours = [8, 12, 19, 20, 21] 
         
         if current_hour in peak_hours:
             active_channels = channels_col.find({"active": True})
@@ -134,7 +134,7 @@ def auto_post_loop():
                 
                 # ၂။ တစ်ခါလုပ်လျှင် Post ဘယ်နှစ်ခု တင်မလဲ (Batch Size)
                 # ဥပမာ - တစ်ခါတင်ရင် ၃ ပုဒ် ဆက်တိုက်တင်ချင်ရင်
-                for _ in range(3): 
+                for _ in range(4): 
                     post = get_random_unposted(channel_id)
                     if post:
                         try:
@@ -167,3 +167,4 @@ if __name__ == "__main__":
     print("🤖 Multi-Channel Bot Started...")
 
     bot.infinity_polling()
+
