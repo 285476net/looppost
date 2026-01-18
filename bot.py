@@ -105,11 +105,31 @@ def auto_post_loop():
                         post = get_oldest_unposted(target_id) 
                         if post:
                             try:
-                                bot.copy_message(target_id, target_id, post['msg_id'])
-                                posts_col.update_one({"_id": post['_id']}, {"$set": {"is_posted": True}})
-                                time.sleep(60) 
+                                if 'last_msg_id' in post:
+                                    try:
+                                        bot.delete_message(target_id, post['last_msg_id'])
+                                        print(f"Deleted old post: {post['last_msg_id']}")
+                                    except:
+                                        
+                                        pass
+                                        
+                                new_msg = bot.copy_message(target_id, target_id, post['msg_id'])
+
+                                posts_col.update_one(
+                                    {"_id": post['_id']},
+                                    {
+                                        "$set": {
+                                            "is_posted": True,
+                                            "last_msg_id": new_msg.message_id
+                                        }
+                                    }
+                                )
+                                print(f"Re-posted new ID: {new_msg.message_id}")
+
+                                time.sleep(60)
                             except Exception as e:
-                                print(f"Error: {e}")
+                                print(f"Error in rotate process: {e}")
+                                
             
             # Batch အားလုံး ပို့ပြီးလျှင် အိပ်ခိုင်းမည်
             time.sleep(3300) 
@@ -121,3 +141,4 @@ if __name__ == "__main__":
     Thread(target=self_ping, daemon=True).start()
     Thread(target=auto_post_loop, daemon=True).start()
     bot.infinity_polling()
+
