@@ -105,7 +105,7 @@ def auto_post_loop():
                         post = get_oldest_unposted(target_id) 
                         if post:
                             try:
-                                bot.copy_message(target_id, target_id, post['msg_id'])
+                                bot.forward_message(chat_id=target_id, from_chat_id=target_id, message_id=post['msg_id'])
                                 posts_col.update_one({"_id": post['_id']}, {"$set": {"is_posted": True}})
                                 time.sleep(60) 
                             except Exception as e:
@@ -121,3 +121,4 @@ if __name__ == "__main__":
     Thread(target=self_ping, daemon=True).start()
     Thread(target=auto_post_loop, daemon=True).start()
     bot.infinity_polling()
+
