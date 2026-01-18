@@ -123,27 +123,35 @@ def auto_post_loop():
         now = datetime.now()
         current_hour = now.hour
         
-        # သတ်မှတ်ထားတဲ့ အချိန်အပိုင်းအခြားတွေမှာပဲ တင်မယ် (ဥပမာ- မနက် ၈၊ နေ့လည် ၁၂၊ ည ၇ ကနေ ၁၀)
-        peak_hours = [8, 12, 19, 20, 21, 22]
+        # ၁။ အချိန်အပိုင်းအခြား (Time Slots) ပြင်ရန်
+        # ဒီစာရင်းထဲက နာရီတွေရောက်မှ Bot က အလုပ်လုပ်ပါမယ်
+        peak_hours = [8, 12, 18, 19, 20, 21, 22] 
         
         if current_hour in peak_hours:
             active_channels = channels_col.find({"active": True})
             for ch in active_channels:
                 channel_id = ch['channel_id']
-                post = get_random_unposted(channel_id)
                 
-                if post:
-                    try:
-                        bot.copy_message(channel_id, channel_id, post['msg_id'])
-                        posts_col.update_one({"_id": post['_id']}, {"$set": {"is_posted": True}})
-                        
-                        # Peak hour ထဲမှာ ၁၅ မိနစ် တစ်ခါပဲ တင်မယ်
-                        time.sleep(900) 
-                    except: pass
+                # ၂။ တစ်ခါလုပ်လျှင် Post ဘယ်နှစ်ခု တင်မလဲ (Batch Size)
+                # ဥပမာ - တစ်ခါတင်ရင် ၃ ပုဒ် ဆက်တိုက်တင်ချင်ရင်
+                for _ in range(3): 
+                    post = get_random_unposted(channel_id)
+                    if post:
+                        try:
+                            bot.copy_message(channel_id, channel_id, post['msg_id'])
+                            posts_col.update_one({"_id": post['_id']}, {"$set": {"is_posted": True}})
+                            
+                            # ၃။ တစ်ခုနဲ့တစ်ခုကြား အချိန်ဘယ်လောက်ခြားမလဲ (Interval)
+                            # 60 = ၁ မိနစ်၊ 300 = ၅ မိနစ်၊ 900 = ၁၅ မိနစ်
+                            time.sleep(60) 
+                        except:
+                            pass
+            
+            # တစ်သုတ် (Batch) တင်ပြီးရင် နောက်တစ်နာရီအထိ ခေတ္တနားမည်
+            time.sleep(3600) 
         else:
-            # Peak hour မဟုတ်ရင် ၁ နာရီ တစ်ခါပဲ loop စစ်မယ် (Battery နဲ့ Resource သက်သာစေတယ်)
+            # Peak hour မဟုတ်ရင် ၁ နာရီတစ်ခါပဲ loop စစ်မည်
             time.sleep(3600)
-
 # ==========================================
 # START BOT
 # ==========================================
@@ -157,4 +165,5 @@ if __name__ == "__main__":
     loop_thread.start()
     
     print("🤖 Multi-Channel Bot Started...")
+
     bot.infinity_polling()
