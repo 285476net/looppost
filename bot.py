@@ -44,12 +44,17 @@ def add_new_post(channel_id, message_id):
     if not posts_col.find_one({"channel_id": str(channel_id), "msg_id": message_id}):
         posts_col.insert_one({"channel_id": str(channel_id), "msg_id": message_id, "is_posted": False})
 
-def get_random_unposted(channel_id):
-    unposted = list(posts_col.find({"channel_id": str(channel_id), "is_posted": False}))
-    if not unposted:
+def get_oldest_unposted(channel_id):
+    """မတင်ရသေးသော Post များထဲမှ ID အငယ်ဆုံး (အဟောင်းဆုံး) ကို ယူသည်"""
+    # .sort("msg_id", 1) က ID အငယ်ကနေ အကြီးကို စီပေးတာပါ
+    oldest = posts_col.find_one({"channel_id": str(channel_id), "is_posted": False}, sort=[("msg_id", 1)])
+    
+    if not oldest:
+        # အားလုံးတင်ပြီးသွားရင် Reset ပြန်လုပ်ပြီး အစကနေ ပြန်စမည်
         posts_col.update_many({"channel_id": str(channel_id)}, {"$set": {"is_posted": False}})
-        unposted = list(posts_col.find({"channel_id": str(channel_id), "is_posted": False}))
-    return random.choice(unposted) if unposted else None
+        oldest = posts_col.find_one({"channel_id": str(channel_id), "is_posted": False}, sort=[("msg_id", 1)])
+    
+    return oldest
 
 # COMMANDS
 @bot.message_handler(commands=['add_channel'])
@@ -103,14 +108,21 @@ def auto_post_loop():
                     target_id = str(ch['channel_id'])
                     batch_size = ch.get('batch_size', 1)
                     
-                    for i in range(batch_size):
-                        post = get_random_unposted(target_id)
+                   for _ in range(ch.get('batch_size', 1)):
+    # Random မဟုတ်ဘဲ အစဉ်လိုက်ယူသည်
+                        post = get_oldest_unposted(ch['channel_id']) 
                         if post:
                             try:
+                                target_id = str(ch['channel_id'])
                                 bot.copy_message(target_id, target_id, post['msg_id'])
+            
+            # တင်ပြီးကြောင်း မှတ်သည်
                                 posts_col.update_one({"_id": post['_id']}, {"$set": {"is_posted": True}})
-                                # Batch ထဲက တစ်ပုဒ်နှင့်တစ်ပုဒ်ကို ၁ မိနစ်စီ ခြားတင်မည် (သင်အလိုရှိသလို 17:00, 17:01, 17:02 ဖြစ်စေရန်)
-                                time.sleep(30) 
+            
+            # ပို့စ်တစ်ခုနှင့်တစ်ခုကြား ၁ မိနစ်ခြားသည် (အစီအစဉ်မလွဲစေရန်)
+                                time.sleep(60) 
+                            except Exception as e:
+                                print(f"Error: {e}")
                             except: pass
             
             # Batch အားလုံး ပို့ပြီးသွားရင် နောက်တစ်နာရီမရောက်မချင်း စောင့်ရန်
@@ -126,6 +138,7 @@ if __name__ == "__main__":
     Thread(target=self_ping, daemon=True).start()
     Thread(target=auto_post_loop, daemon=True).start()
     bot.infinity_polling()
+
 
 
 
