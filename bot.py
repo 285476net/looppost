@@ -6,7 +6,8 @@ import requests
 from threading import Thread
 from flask import Flask
 from pymongo import MongoClient
-from datetime import datetime
+# FIXED: timedelta ကို import ထဲမှာ ထည့်သွင်းထားသည်
+from datetime import datetime, timedelta 
 
 # CONFIGURATION
 BOT_TOKEN = os.getenv('BOT_TOKEN')
@@ -30,14 +31,13 @@ def run_http():
 
 # ANTI-SLEEP (SELF-PING)
 def self_ping():
-    # Render က ပေးတဲ့ URL ကို အလိုအလျောက် ယူပါမယ်
     url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}.onrender.com"
     while True:
         try:
             requests.get(url)
             print(f"Pinged {url}")
         except: pass
-        time.sleep(1200) # ၂၀ မိနစ် တစ်ခါ
+        time.sleep(1200)
 
 # DATABASE HELPERS
 def add_new_post(channel_id, message_id):
@@ -45,15 +45,10 @@ def add_new_post(channel_id, message_id):
         posts_col.insert_one({"channel_id": str(channel_id), "msg_id": message_id, "is_posted": False})
 
 def get_oldest_unposted(channel_id):
-    """မတင်ရသေးသော Post များထဲမှ ID အငယ်ဆုံး (အဟောင်းဆုံး) ကို ယူသည်"""
-    # .sort("msg_id", 1) က ID အငယ်ကနေ အကြီးကို စီပေးတာပါ
     oldest = posts_col.find_one({"channel_id": str(channel_id), "is_posted": False}, sort=[("msg_id", 1)])
-    
     if not oldest:
-        # အားလုံးတင်ပြီးသွားရင် Reset ပြန်လုပ်ပြီး အစကနေ ပြန်စမည်
         posts_col.update_many({"channel_id": str(channel_id)}, {"$set": {"is_posted": False}})
         oldest = posts_col.find_one({"channel_id": str(channel_id), "is_posted": False}, sort=[("msg_id", 1)])
-    
     return oldest
 
 # COMMANDS
@@ -91,16 +86,14 @@ def auto_save(message):
     if channels_col.find_one({"channel_id": str(message.chat.id), "active": True}):
         add_new_post(message.chat.id, message.message_id)
 
-# NEW UPDATED LOOP
+# NEW UPDATED LOOP (FIXED INDENTATION & LOGIC)
 def auto_post_loop():
     while True:
         now = datetime.utcnow()
-        # မြန်မာစံတော်ချိန် တွက်ချက်ခြင်း
         mmt_now = now + timedelta(hours=6, minutes=30)
         current_hour = mmt_now.hour
-        current_minute = mmt_now.minute # မိနစ်ပိုင်းကို ယူသည်
+        current_minute = mmt_now.minute
 
-        # ၁။ မိနစ်ပိုင်းက 0 ဖြစ်မှသာ (ဆိုလိုသည်မှာ နာရီအတိအကျတွင်သာ) အလုပ်လုပ်မည်
         if current_minute == 0:
             active_channels = channels_col.find({"active": True})
             for ch in active_channels:
@@ -108,29 +101,19 @@ def auto_post_loop():
                     target_id = str(ch['channel_id'])
                     batch_size = ch.get('batch_size', 1)
                     
-                   for _ in range(ch.get('batch_size', 1)):
-    # Random မဟုတ်ဘဲ အစဉ်လိုက်ယူသည်
-                        post = get_oldest_unposted(ch['channel_id']) 
+                    for _ in range(batch_size):
+                        post = get_oldest_unposted(target_id) 
                         if post:
                             try:
-                                target_id = str(ch['channel_id'])
                                 bot.copy_message(target_id, target_id, post['msg_id'])
-            
-            # တင်ပြီးကြောင်း မှတ်သည်
                                 posts_col.update_one({"_id": post['_id']}, {"$set": {"is_posted": True}})
-            
-            # ပို့စ်တစ်ခုနှင့်တစ်ခုကြား ၁ မိနစ်ခြားသည် (အစီအစဉ်မလွဲစေရန်)
                                 time.sleep(60) 
                             except Exception as e:
                                 print(f"Error: {e}")
-                            except: pass
             
-            # Batch အားလုံး ပို့ပြီးသွားရင် နောက်တစ်နာရီမရောက်မချင်း စောင့်ရန်
-            # (ပို့စ်တင်တဲ့အချိန်က မိနစ်အနည်းငယ် ကြာသွားနိုင်လို့ ၅၅ မိနစ်လောက်ပဲ အိပ်ခိုင်းပါမယ်)
-            time.sleep(1800) 
-        
+            # Batch အားလုံး ပို့ပြီးလျှင် အိပ်ခိုင်းမည်
+            time.sleep(3300) 
         else:
-            # မိနစ်ပိုင်းက 0 မဟုတ်သေးရင် ၁ မိနစ်တစ်ခါပဲ ပြန်စစ်မည် (နာရီအတိအကျကို စောင့်ရန်)
             time.sleep(60)
 
 if __name__ == "__main__":
@@ -138,7 +121,3 @@ if __name__ == "__main__":
     Thread(target=self_ping, daemon=True).start()
     Thread(target=auto_post_loop, daemon=True).start()
     bot.infinity_polling()
-
-
-
-
