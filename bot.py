@@ -89,24 +89,43 @@ def auto_save(message):
 # NEW UPDATED LOOP
 def auto_post_loop():
     while True:
-        current_hour = int((datetime.utcnow().hour + 6.5) % 24)
-        print(f"DEBUG: Current MMT Hour is {current_hour}")
-        for ch in channels_col.find({"active": True}):
-            if current_hour in ch.get('peak_hours', []):
-                for _ in range(ch.get('batch_size', 1)):
-                    post = get_random_unposted(ch['channel_id'])
-                    if post:
-                        try:
-                            bot.copy_message(ch['channel_id'], ch['channel_id'], post['msg_id'])
-                            posts_col.update_one({"_id": post['_id']}, {"$set": {"is_posted": True}})
-                            time.sleep(60)
-                        except: pass
-        time.sleep(60)
+        now = datetime.utcnow()
+        # မြန်မာစံတော်ချိန် တွက်ချက်ခြင်း
+        mmt_now = now + timedelta(hours=6, minutes=30)
+        current_hour = mmt_now.hour
+        current_minute = mmt_now.minute # မိနစ်ပိုင်းကို ယူသည်
+
+        # ၁။ မိနစ်ပိုင်းက 0 ဖြစ်မှသာ (ဆိုလိုသည်မှာ နာရီအတိအကျတွင်သာ) အလုပ်လုပ်မည်
+        if current_minute == 0:
+            active_channels = channels_col.find({"active": True})
+            for ch in active_channels:
+                if current_hour in ch.get('peak_hours', []):
+                    target_id = str(ch['channel_id'])
+                    batch_size = ch.get('batch_size', 1)
+                    
+                    for i in range(batch_size):
+                        post = get_random_unposted(target_id)
+                        if post:
+                            try:
+                                bot.copy_message(target_id, target_id, post['msg_id'])
+                                posts_col.update_one({"_id": post['_id']}, {"$set": {"is_posted": True}})
+                                # Batch ထဲက တစ်ပုဒ်နှင့်တစ်ပုဒ်ကို ၁ မိနစ်စီ ခြားတင်မည် (သင်အလိုရှိသလို 17:00, 17:01, 17:02 ဖြစ်စေရန်)
+                                time.sleep(30) 
+                            except: pass
+            
+            # Batch အားလုံး ပို့ပြီးသွားရင် နောက်တစ်နာရီမရောက်မချင်း စောင့်ရန်
+            # (ပို့စ်တင်တဲ့အချိန်က မိနစ်အနည်းငယ် ကြာသွားနိုင်လို့ ၅၅ မိနစ်လောက်ပဲ အိပ်ခိုင်းပါမယ်)
+            time.sleep(1800) 
+        
+        else:
+            # မိနစ်ပိုင်းက 0 မဟုတ်သေးရင် ၁ မိနစ်တစ်ခါပဲ ပြန်စစ်မည် (နာရီအတိအကျကို စောင့်ရန်)
+            time.sleep(60)
 
 if __name__ == "__main__":
     Thread(target=run_http).start()
     Thread(target=self_ping, daemon=True).start()
     Thread(target=auto_post_loop, daemon=True).start()
     bot.infinity_polling()
+
 
 
