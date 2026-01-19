@@ -20,6 +20,7 @@ db = client['multichannel_autopost_db']
 
 channels_col = db['channels']
 posts_col = db['posts']
+force_sub_col = db['force_subscribe']
 
 # KEEP ALIVE SERVER
 app = Flask('')
@@ -51,7 +52,68 @@ def get_oldest_unposted(channel_id):
         oldest = posts_col.find_one({"channel_id": str(channel_id), "is_posted": False}, sort=[("msg_id", 1)])
     return oldest
 
+def check_subscription(user_id):
+    config = force_sub_col.find_one({"type": "mandatory_channel"})
+    if not config:
+        return True  # Channel သတ်မှတ်မထားရင် အလိုအလျောက် ပေးသုံးမယ်
+    
+    try:
+        # Bot ကို Channel ထဲမှာ Admin ခန့်ထားဖို့ လိုအပ်ပါတယ်
+        member = bot.get_chat_member(config['channel_id'], user_id)
+        if member.status in ['member', 'administrator', 'creator']:
+            return True
+        return False
+    except Exception as e:
+        print(f"Sub Check Error: {e}")
+        return False
+
 # COMMANDS
+# ၁။ Admin အတွက် Channel သတ်မှတ်ရန် Command
+@bot.message_handler(commands=['set_force_sub'])
+def set_force_sub(message):
+    if message.from_user.id != ADMIN_ID: return
+    try:
+        parts = message.text.split()
+        # ပုံစံ: /set_force_sub -100123456789 https://t.me/yourchannel
+        channel_id = parts[1]
+        invite_link = parts[2]
+        
+        force_sub_col.update_one(
+            {"type": "mandatory_channel"}, 
+            {"$set": {"channel_id": channel_id, "link": invite_link}}, 
+            upsert=True
+        )
+        bot.reply_to(message, "✅ Force Subscribe Channel သတ်မှတ်ပြီးပါပြီ!")
+    except:
+        bot.reply_to(message, "အသုံးပြုပုံ: /set_force_sub [Channel_ID] [Link]")
+
+# ၂။ User အတွက် Start Command (Force Sub စစ်ဆေးမည်)
+@bot.message_handler(commands=['start'])
+def start_handler(message):
+    user_id = message.from_user.id
+    config = force_sub_col.find_one({"type": "mandatory_channel"})
+    
+    # Subscription ရှိမရှိ အရင်စစ်မယ်
+    if not check_subscription(user_id):
+        link = config['link'] if config else "https://t.me/tg_channel"
+        
+        markup = telebot.types.InlineKeyboardMarkup()
+        btn1 = telebot.types.InlineKeyboardButton("📢 Channel ကို Join ရန်", url=link)
+        # Try Again နှိပ်ရင် Bot ကို ပြန် Start ခိုင်းတာပါ
+        btn2 = telebot.types.InlineKeyboardButton("🔄 Join ပြီးပါပြီ (Try Again)", url=f"https://t.me/{bot.get_me().username}?start=start")
+        markup.add(btn1)
+        markup.add(btn2)
+        
+        bot.send_message(
+            message.chat.id, 
+            "⚠️ ရှေ့ဆက်ရန် ကျွန်ုပ်တို့၏ Channel ကို အရင် Join ပေးပါ။ Join ပြီးမှ Try Again ကို နှိပ်ပါ ခင်ဗျာ။",
+            reply_markup=markup
+        )
+        return
+
+    # Join ပြီးသားဆိုရင် ဒါကိုပြမယ်
+    bot.reply_to(message, "မင်္ဂလာပါ! ဇာတ်ကားအားလုံးကို free ကြည့်ရှုခံစားလိုက်ပါ")
+    
 @bot.message_handler(commands=['add_channel'])
 def add_channel(message):
     if message.from_user.id != ADMIN_ID: return
@@ -121,4 +183,5 @@ if __name__ == "__main__":
     Thread(target=self_ping, daemon=True).start()
     Thread(target=auto_post_loop, daemon=True).start()
     bot.infinity_polling()
+
 
