@@ -22,27 +22,19 @@ tz = pytz.timezone('Asia/Yangon')
 # MongoDB Setup
 client = MongoClient(MONGO_URL, tls=True, tlsAllowInvalidCertificates=True)
 db = client['smart_multi_channel_bot']
-channels_col = db['authorized_channels'] # ခွင့်ပြုထားတဲ့ channel စာရင်း
-settings_col = db['settings']            # အချိန်နဲ့ post အရေအတွက် setting
-posts_col = db['posts']                  # Original posts database
-sent_col = db['sent_messages']           # ဖျက်ဖို့ msg id များ
+channels_col = db['authorized_channels']
+settings_col = db['settings']
+posts_col = db['posts']
+sent_col = db['sent_messages']
 
-# --- WEB SERVER & KEEP ALIVE ---
+# --- WEB SERVER ---
 @app.route('/')
 def index(): return "Bot is strictly active!"
 
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
 
-def keep_alive():
-    while True:
-        try:
-            if RENDER_URL: requests.get(RENDER_URL)
-            time.sleep(600)
-        except: pass
-
-# --- CORE LOGIC: POSTING & CLEANING ---
-
+# --- POSTING & CLEANING ---
 def auto_forward_job(channel_id):
     setting = settings_col.find_one({"channel_id": channel_id})
     if not setting: return
@@ -54,19 +46,24 @@ def auto_forward_job(channel_id):
         
         if next_post:
             try:
-                sent_msg = bot.forward_message(channel_id, channel_id, next_post['msg_id'])
+                # Forward အစား copy_message ကို သုံးခြင်းက ပိုစိတ်ချရသည်
+                sent_msg = bot.copy_message(channel_id, channel_id, next_post['msg_id'])
                 posts_col.update_one({"_id": next_post["_id"]}, {"$set": {"posted": True}})
                 sent_col.insert_one({"channel_id": channel_id, "msg_id": sent_msg.message_id})
                 time.sleep(2)
             except Exception as e:
                 print(f"Error in {channel_id}: {e}")
         else:
-            # Cycle ပြီးရင် Cleanup လုပ်မယ်
-            sent_messages = sent_col.find({"channel_id": channel_id})
+            # Cleanup logic
+            sent_messages = list(sent_col.find({"channel_id": channel_id}))
+            if not sent_messages:
+                posts_col.update_many({"channel_id": channel_id}, {"$set": {"posted": False}})
+                return
+
             for msg in sent_messages:
                 try:
                     bot.delete_message(channel_id, msg['msg_id'])
-                    time.sleep(1.2)
+                    time.sleep(1)
                 except: pass
             
             sent_col.delete_many({"channel_id": channel_id})
@@ -75,7 +72,45 @@ def auto_forward_job(channel_id):
 
 # --- ADMIN COMMANDS ---
 
-# ၁။ Channel အသစ်ထည့်ခြင်း (Private chat မှာ ID ပေးပြီး ခိုင်းရမယ်)
+# ၁။ Post အဟောင်းများကို ID Range ဖြင့် ဆွဲယူခြင်း (အရေးကြီးဆုံး အပိုင်း)
+@bot.message_handler(commands=['fetch'])
+def fetch_old_posts(message):
+    if message.from_user.id != ADMIN_ID: return
+    try:
+        # Format: /fetch [channel_id] [start_id] [end_id]
+        args = message.text.split()
+        target_cid = int(args[1])
+        start_id = int(args[2])
+        end_id = int(args[3])
+
+        count = 0
+        status_msg = bot.reply_to(message, f"⌛ Channel {target_cid} မှ Post များကို စစ်ဆေးနေသည်...")
+
+        for msg_id in range(start_id, end_id + 1):
+            try:
+                # Message ရှိ၊ မရှိ copy စမ်းလုပ်ကြည့်ခြင်းဖြင့် စစ်ဆေးသည်
+                # တကယ် copy မလုပ်ဘဲ data ပဲ ယူမှာမို့လို့ Chat ID အဖြစ် Admin ID ကို ခဏသုံးမယ်
+                temp_msg = bot.forward_message(ADMIN_ID, target_cid, msg_id, disable_notification=True)
+                
+                # Forwarded မဟုတ်မှ သိမ်းမည်
+                if not temp_msg.forward_from_chat or temp_msg.forward_from_chat.id == target_cid:
+                    posts_col.update_one(
+                        {"channel_id": target_cid, "msg_id": msg_id},
+                        {"$set": {"posted": False}},
+                        upsert=True
+                    )
+                    count += 1
+                
+                bot.delete_message(ADMIN_ID, temp_msg.message_id) # ယာယီ forward တာကို ပြန်ဖျက်သည်
+                time.sleep(0.5) # Flood wait ရှောင်ရန်
+            except:
+                continue
+        
+        bot.edit_message_text(f"✅ လုပ်ဆောင်ချက် ပြီးဆုံးပါပြီ!\nPost အသစ် {count} ခုကို Database ထဲ ထည့်သွင်းပြီးပါပြီ။", message.chat.id, status_msg.message_id)
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error: {str(e)}\nFormat: /fetch -100xxx 1 500")
+
+# ၂။ Channel ခွင့်ပြုခြင်း
 @bot.message_handler(commands=['addchannel'])
 def add_channel(message):
     if message.from_user.id != ADMIN_ID: return
@@ -86,93 +121,45 @@ def add_channel(message):
     except:
         bot.reply_to(message, "❌ Format: /addchannel -100xxxxxxxx")
 
-# ၂။ Channel Setting သတ်မှတ်ခြင်း (Channel ထဲမှာဖြစ်စေ၊ Private Chat မှာဖြစ်စေ ခိုင်းနိုင်တယ်)
+# ၃။ Setting သတ်မှတ်ခြင်း
 @bot.message_handler(commands=['set'])
 def set_config(message):
     if message.from_user.id != ADMIN_ID: return
-    
     try:
         args = message.text.split()
-        # Format: /set [channel_id] [count] [hours]
-        # ဥပမာ: /set -100123 1 8,12,18
         target_cid = int(args[1])
         count = int(args[2])
         hours = args[3]
-
-        if not channels_col.find_one({"channel_id": target_cid}):
-            bot.reply_to(message, "⚠️ ဒီ Channel ကို အရင် Add လုပ်ပေးပါ။")
-            return
-
-        settings_col.update_one(
-            {"channel_id": target_cid},
-            {"$set": {"post_count": count, "hours": hours}},
-            upsert=True
-        )
+        settings_col.update_one({"channel_id": target_cid}, {"$set": {"post_count": count, "hours": hours}}, upsert=True)
         setup_scheduler()
-        bot.reply_to(message, f"✅ Updated: Channel {target_cid}\nHours: {hours}\nPer Time: {count}")
+        bot.reply_to(message, "✅ Setting အောင်မြင်ပါသည်။")
     except:
-        bot.reply_to(message, "❌ Format: /set [channel_id] [count] [hours]\nဥပမာ: /set -100xxx 1 8,12,20")
+        bot.reply_to(message, "❌ Format: /set [channel_id] [count] [hours]")
 
-# ၃။ လက်ရှိ Active ဖြစ်နေတဲ့ Channel များ ကြည့်ရန်
-@bot.message_handler(commands=['list'])
-def list_channels(message):
-    if message.from_user.id != ADMIN_ID: return
-    active_list = channels_col.find()
-    msg = "📋 **Authorized Channels:**\n"
-    for c in active_list:
-        msg += f"• `{c['channel_id']}`\n"
-    bot.reply_to(message, msg, parse_mode="Markdown")
-
-# ၄။ Post သိမ်းဆည်းခြင်း (ပိုမိုသေချာအောင် ပြင်ဆင်ထားသည်)
+# ၄။ Post အသစ်တင်လျှင် သိမ်းခြင်း
 @bot.channel_post_handler(func=lambda message: True)
 def handle_channel_post(message):
-    # Channel ID က ခွင့်ပြုထားတဲ့ စာရင်းထဲမှာ ရှိ၊ မရှိ အရင်စစ်မယ်
-    is_authorized = channels_col.find_one({"channel_id": message.chat.id})
-    
-    if is_authorized:
-        # Bot ကိုယ်တိုင် ပြန်တင်တဲ့ (Forward) Post မဟုတ်မှ သိမ်းမယ်
-        # message.forward_from_chat က မူလတင်တဲ့ channel id ကို ပြတယ်
-        # အကယ်၍ forward လုပ်လိုက်တဲ့ channel id နဲ့ လက်ရှိ channel id တူနေရင် (ဆိုလိုတာက channel ထဲမှာတင်ထားတာကို ပြန် forward လုပ်တာမျိုး)
-        # ဒါမှမဟုတ် message က original post ဖြစ်နေရင် သိမ်းမယ်
-        
-        # Bot က ပြန်တင်တဲ့ message တွေကို filter လုပ်ဖို့ logic
-        is_bot_repost = False
-        if message.forward_from_chat and message.forward_from_chat.id == message.chat.id:
-             # ဒါက သင် manual forward ပြန်လုပ်ပေးတာမျိုး ဖြစ်နိုင်လို့ သိမ်းခိုင်းမယ်
-             is_bot_repost = False 
-        
-        posts_col.update_one(
-            {"channel_id": message.chat.id, "msg_id": message.message_id},
-            {"$set": {"posted": False}},
-            upsert=True
-        )
-        print(f"✅ Post Saved to DB: {message.message_id} in Channel {message.chat.id}")
+    if channels_col.find_one({"channel_id": message.chat.id}):
+        # Bot ကိုယ်တိုင် copy/forward လုပ်တာ မဟုတ်မှ သိမ်းမယ်
+        if not message.forward_from_chat:
+            posts_col.update_one(
+                {"channel_id": message.chat.id, "msg_id": message.message_id},
+                {"$set": {"posted": False}},
+                upsert=True
+            )
 
 # --- SCHEDULER ---
 scheduler = BackgroundScheduler(timezone=tz)
-
 def setup_scheduler():
     scheduler.remove_all_jobs()
-    all_settings = settings_col.find()
-    for setting in all_settings:
-        cid = setting['channel_id']
-        hours = setting['hours'].split(',')
-        for hr in hours:
+    for s in settings_col.find():
+        for hr in s['hours'].split(','):
             try:
-                scheduler.add_job(
-                    auto_forward_job,
-                    CronTrigger(hour=int(hr), minute=0, timezone=tz),
-                    args=[cid],
-                    id=f"{cid}_{hr}"
-                )
+                scheduler.add_job(auto_forward_job, CronTrigger(hour=int(hr), minute=0, timezone=tz), args=[s['channel_id']], id=f"{s['channel_id']}_{hr}")
             except: pass
 
-# --- START ---
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
-    threading.Thread(target=keep_alive, daemon=True).start()
     setup_scheduler()
     scheduler.start()
-    print("Bot is ready for Multi-Channel Management!")
     bot.infinity_polling()
-
