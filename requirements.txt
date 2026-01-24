@@ -1,3 +1,6 @@
 pyTelegramBotAPI
 pymongo
 flask
+apscheduler
+requests
+pytz
