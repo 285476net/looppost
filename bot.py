@@ -50,39 +50,43 @@ def run_flask():
 def auto_forward_job(channel_id):
     setting = settings_col.find_one({"channel_id": channel_id})
     if not setting: return
-
+    
     post_count = setting.get("post_count", 1)
     
-    # ရွေးထားတဲ့ အရေအတွက်အတိုင်း Post တင်မည်
     for _ in range(post_count):
+        # တင်ရန်ကျန်သေးသော Post ကို ယူသည်
         next_post = posts_col.find_one({"channel_id": channel_id, "posted": False}, sort=[("msg_id", 1)])
         
         if next_post:
             try:
-                # copy_message သည် ပိုမိုစိတ်ချရပြီး message history ကို မပျက်စေပါ
+                # Copy message ဖြင့် တင်သည်
                 sent_msg = bot.copy_message(channel_id, channel_id, next_post['msg_id'])
                 posts_col.update_one({"_id": next_post["_id"]}, {"$set": {"posted": True}})
                 sent_col.insert_one({"channel_id": channel_id, "msg_id": sent_msg.message_id})
-                time.sleep(2) # Telegram Flood limit ကို ရှောင်ရန်
+                time.sleep(2)
             except Exception as e:
-                print(f"Post Error in {channel_id}: {e}")
+                print(f"Error: {e}")
         else:
-            # Post အသစ်မရှိတော့လျှင် အဟောင်းများကို ဖျက်ပြီး loop ပြန်စမည်
+            # --- အားလုံး တင်ပြီးသွားရင် Cleanup လုပ်မည့်အပိုင်း ---
             sent_messages = list(sent_col.find({"channel_id": channel_id}))
             if not sent_messages:
+                # Post အဟောင်းတွေကို False ပြန်ပြောင်းပြီး Loop ပြန်စစေသည်
                 posts_col.update_many({"channel_id": channel_id}, {"$set": {"posted": False}})
                 return
 
+            # Bot တင်ထားသမျှ အကုန်ပြန်ဖျက်သည်
             for msg in sent_messages:
                 try:
                     bot.delete_message(channel_id, msg['msg_id'])
                     time.sleep(1)
                 except: pass
             
+            # Database ရှင်းထုတ်ပြီး နောက်တစ်ခေါက် ပထမဆုံး post ကနေ ပြန်စရန် ပြင်ဆင်သည်
             sent_col.delete_many({"channel_id": channel_id})
             posts_col.update_many({"channel_id": channel_id}, {"$set": {"posted": False}})
+            print(f"🔄 Loop Restarted for Channel: {channel_id}")
             break
-
+            
 # --- ADMIN COMMANDS ---
 
 @bot.message_handler(commands=['fetch'])
@@ -163,23 +167,30 @@ def set_config(message):
 
 @bot.channel_post_handler(func=lambda message: True)
 def handle_channel_post(message):
-    # ၁။ ခွင့်ပြုထားတဲ့ Channel ဟုတ်၊ မဟုတ် စစ်မည်
+    # ၁။ ခွင့်ပြုထားတဲ့ Channel ဟုတ်၊ မဟုတ် စစ်ဆေးခြင်း
     if not channels_col.find_one({"channel_id": message.chat.id}):
         return
 
-    # ၂။ Bot ကိုယ်တိုင် တင်တာဆိုရင် Database ထဲ ထပ်မသိမ်းပါ
+    # ၂။ Bot ကိုယ်တိုင် တင်တဲ့ Post ဆိုရင် လုံးဝ မသိမ်းပါ (Loop ပတ်တာကို မနှောင့်ယှက်စေရန်)
     if BOT_INFO and message.from_user and message.from_user.id == BOT_INFO.id:
         return
     
-    # ၃။ Forward Filter (တခြား Channel မှ Forward လာတာတွေကို မသိမ်းပါ)
+    # ၃။ တခြား Channel က Forward လာတာမျိုး မဟုတ်မှ သိမ်းပါမယ်
     if message.forward_from_chat and message.forward_from_chat.id != message.chat.id:
         return
 
+    # ၄။ ရှိပြီးသား Message ID ဖြစ်နေရင် ထပ်မသိမ်းပါ (Duplicate တားဆီးရန်)
+    exists = posts_col.find_one({"channel_id": message.chat.id, "msg_id": message.message_id})
+    if exists:
+        return
+
+    # ၅။ Owner (သို့) အခြား Admin တင်လိုက်တဲ့ Post အစစ်အမှန်ကိုသာ Database ထဲ ထည့်ပါမယ်
     posts_col.update_one(
         {"channel_id": message.chat.id, "msg_id": message.message_id},
         {"$set": {"posted": False}},
         upsert=True
     )
+    print(f"📥 New Source Post Saved (ID: {message.message_id})")
 
 # --- SCHEDULER ---
 scheduler = BackgroundScheduler(timezone=tz)
@@ -219,3 +230,4 @@ if __name__ == "__main__":
         
     # Bot ကို infinity loop ပတ်ထားမယ်
     bot.infinity_polling(timeout=60, long_polling_timeout=30)
+
