@@ -68,9 +68,12 @@ def auto_forward_job(channel_id):
                 print(f"Error: {e}")
         else:
             # --- အားလုံး တင်ပြီးသွားရင် Cleanup လုပ်မည့်အပိုင်း ---
+            # ချက်ချင်းမဖျက်ခင် 5 second ခဏစောင့်ပါမယ်။
+            # ဒါမှ နောက်ဆုံးတင်လိုက်တဲ့ message ကို Listener က Bot တင်တာလို့ သေချာမှတ်မိမှာပါ
+            time.sleep(5) 
+
             sent_messages = list(sent_col.find({"channel_id": channel_id}))
             if not sent_messages:
-                # Post အဟောင်းတွေကို False ပြန်ပြောင်းပြီး Loop ပြန်စစေသည်
                 posts_col.update_many({"channel_id": channel_id}, {"$set": {"posted": False}})
                 return
 
@@ -78,10 +81,10 @@ def auto_forward_job(channel_id):
             for msg in sent_messages:
                 try:
                     bot.delete_message(channel_id, msg['msg_id'])
-                    time.sleep(1)
+                    time.sleep(1) # Delete တစ်ခုနဲ့တစ်ခုကြား flood မမိအောင် စောင့်ခြင်း
                 except: pass
             
-            # Database ရှင်းထုတ်ပြီး နောက်တစ်ခေါက် ပထမဆုံး post ကနေ ပြန်စရန် ပြင်ဆင်သည်
+            # Database ရှင်းထုတ်ပြီး loop ပြန်စရန် ပြင်ဆင်သည်
             sent_col.delete_many({"channel_id": channel_id})
             posts_col.update_many({"channel_id": channel_id}, {"$set": {"posted": False}})
             print(f"🔄 Loop Restarted for Channel: {channel_id}")
@@ -235,5 +238,6 @@ if __name__ == "__main__":
         
     # Bot ကို infinity loop ပတ်ထားမယ်
     bot.infinity_polling(timeout=60, long_polling_timeout=30)
+
 
 
