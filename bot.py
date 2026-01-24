@@ -17,6 +17,7 @@ RENDER_URL = os.environ.get("RENDER_URL")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
+ME = bot.get_me()
 tz = pytz.timezone('Asia/Yangon')
 
 # MongoDB Setup
@@ -136,18 +137,37 @@ def set_config(message):
     except:
         bot.reply_to(message, "❌ Format: /set [channel_id] [count] [hours]")
 
-# ၄။ Post အသစ်တင်လျှင် သိမ်းခြင်း
+# Bot ရဲ့ ကိုယ်ပိုင် ID ကို အစကတည်းက ယူထားမယ်
+
 @bot.channel_post_handler(func=lambda message: True)
 def handle_channel_post(message):
-    if channels_col.find_one({"channel_id": message.chat.id}):
-        # Bot ကိုယ်တိုင် copy/forward လုပ်တာ မဟုတ်မှ သိမ်းမယ်
-        if not message.forward_from_chat:
-            posts_col.update_one(
-                {"channel_id": message.chat.id, "msg_id": message.message_id},
-                {"$set": {"posted": False}},
-                upsert=True
-            )
+    # ၁။ ခွင့်ပြုထားတဲ့ Channel ဟုတ်၊ မဟုတ် စစ်မယ်
+    if not channels_col.find_one({"channel_id": message.chat.id}):
+        return
 
+    # ၂။ Bot ကိုယ်တိုင် တင်တာလား စစ်မယ်
+    # Bot တင်တာဆိုရင် ကျော်သွားမယ် (Database ထဲ ထပ်မသိမ်းဖို့)
+    if message.from_user and message.from_user.id == ME.id:
+        return
+    
+    # ၃။ sender_chat id ကို စစ်ခြင်း (Channel မှာ post တင်ရင် message.sender_chat က channel ဖြစ်နေတတ်တယ်)
+    # ဒါပေမဲ့ bot တင်ရင် message.from_user က bot ဖြစ်နေမှာမို့လို့ ခွဲခြားလို့ရပါတယ်
+
+    # ၄။ Forwarded message စစ်ဆေးချက်
+    if message.forward_from_chat:
+        # ဒီ Channel ထဲကဟာကိုပဲ ဒီထဲမှာ ပြန် forward တာဆိုရင် သိမ်းမယ် (Manual Fetch လုပ်တဲ့ သဘော)
+        # တခြား channel က forward လာတာဆိုရင်တော့ မသိမ်းဘူး
+        if message.forward_from_chat.id != message.chat.id:
+            return
+
+    # ၅။ အပေါ်က filters တွေ အကုန်လွတ်ပြီဆိုရင် Owner တင်တင်၊ Admin တင်တင် သိမ်းမယ်
+    posts_col.update_one(
+        {"channel_id": message.chat.id, "msg_id": message.message_id},
+        {"$set": {"posted": False}},
+        upsert=True
+    )
+    print(f"📥 New Post Captured (ID: {message.message_id})")
+    
 # --- SCHEDULER ---
 scheduler = BackgroundScheduler(timezone=tz)
 def setup_scheduler():
@@ -163,3 +183,4 @@ if __name__ == "__main__":
     setup_scheduler()
     scheduler.start()
     bot.infinity_polling()
+
