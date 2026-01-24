@@ -167,30 +167,35 @@ def set_config(message):
 
 @bot.channel_post_handler(func=lambda message: True)
 def handle_channel_post(message):
-    # ၁။ ခွင့်ပြုထားတဲ့ Channel ဟုတ်၊ မဟုတ် စစ်ဆေးခြင်း
+    # ၁။ Channel ခွင့်ပြုချက် စစ်မယ်
     if not channels_col.find_one({"channel_id": message.chat.id}):
         return
 
-    # ၂။ Bot ကိုယ်တိုင် တင်တဲ့ Post ဆိုရင် လုံးဝ မသိမ်းပါ (Loop ပတ်တာကို မနှောင့်ယှက်စေရန်)
-    if BOT_INFO and message.from_user and message.from_user.id == BOT_INFO.id:
+    # ၂။ Bot က အခုလေးတင် ပို့လိုက်တဲ့ Message ID ဟုတ်မဟုတ် Database မှာ စစ်မယ်
+    # Bot က copy_message လုပ်ပြီးတာနဲ့ sent_col ထဲကို ID ထည့်လိုက်တာမို့ 
+    # အဲ့ဒီ ID ရှိနေရင် Bot တင်တာလို့ သေချာပေါက် ပြောလို့ရပါတယ်။
+    is_bot_post = sent_col.find_one({"channel_id": message.chat.id, "msg_id": message.message_id})
+    if is_bot_post:
+        # Bot တင်တာဖြစ်တဲ့အတွက် Database ထဲ ထပ်မသိမ်းဘဲ ကျော်လိုက်မယ်
         return
     
-    # ၃။ တခြား Channel က Forward လာတာမျိုး မဟုတ်မှ သိမ်းပါမယ်
+    # ၃။ Forward Filter (တခြား Channel ကလာရင် မသိမ်းဘူး)
     if message.forward_from_chat and message.forward_from_chat.id != message.chat.id:
         return
 
-    # ၄။ ရှိပြီးသား Message ID ဖြစ်နေရင် ထပ်မသိမ်းပါ (Duplicate တားဆီးရန်)
+    # ၄။ ရှိပြီးသား Message ID ဖြစ်နေရင် ထပ်မသိမ်းပါ
     exists = posts_col.find_one({"channel_id": message.chat.id, "msg_id": message.message_id})
     if exists:
         return
 
-    # ၅။ Owner (သို့) အခြား Admin တင်လိုက်တဲ့ Post အစစ်အမှန်ကိုသာ Database ထဲ ထည့်ပါမယ်
+    # ၅။ တကယ်လို့ Bot ပို့တာလည်း မဟုတ်ဘူး၊ DB မှာလည်း မရှိသေးဘူးဆိုရင် 
+    # ဒါဟာ Owner (မင်း) ကိုယ်တိုင် အသစ်တင်လိုက်တဲ့ Post ဖြစ်လို့ သိမ်းလိုက်မယ်
     posts_col.update_one(
         {"channel_id": message.chat.id, "msg_id": message.message_id},
         {"$set": {"posted": False}},
         upsert=True
     )
-    print(f"📥 New Source Post Saved (ID: {message.message_id})")
+    print(f"📥 New Manual Post Captured: {message.message_id}")
 
 # --- SCHEDULER ---
 scheduler = BackgroundScheduler(timezone=tz)
@@ -230,4 +235,5 @@ if __name__ == "__main__":
         
     # Bot ကို infinity loop ပတ်ထားမယ်
     bot.infinity_polling(timeout=60, long_polling_timeout=30)
+
 
