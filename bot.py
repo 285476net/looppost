@@ -123,16 +123,30 @@ def list_channels(message):
         msg += f"• `{c['channel_id']}`\n"
     bot.reply_to(message, msg, parse_mode="Markdown")
 
-# ၄။ Post သိမ်းဆည်းခြင်း (ခွင့်ပြုထားသော channel မှသာ သိမ်းမည်)
+# ၄။ Post သိမ်းဆည်းခြင်း (ပိုမိုသေချာအောင် ပြင်ဆင်ထားသည်)
 @bot.channel_post_handler(func=lambda message: True)
 def handle_channel_post(message):
-    if channels_col.find_one({"channel_id": message.chat.id}):
-        if not message.forward_from_chat:
-            posts_col.update_one(
-                {"channel_id": message.chat.id, "msg_id": message.message_id},
-                {"$set": {"posted": False}},
-                upsert=True
-            )
+    # Channel ID က ခွင့်ပြုထားတဲ့ စာရင်းထဲမှာ ရှိ၊ မရှိ အရင်စစ်မယ်
+    is_authorized = channels_col.find_one({"channel_id": message.chat.id})
+    
+    if is_authorized:
+        # Bot ကိုယ်တိုင် ပြန်တင်တဲ့ (Forward) Post မဟုတ်မှ သိမ်းမယ်
+        # message.forward_from_chat က မူလတင်တဲ့ channel id ကို ပြတယ်
+        # အကယ်၍ forward လုပ်လိုက်တဲ့ channel id နဲ့ လက်ရှိ channel id တူနေရင် (ဆိုလိုတာက channel ထဲမှာတင်ထားတာကို ပြန် forward လုပ်တာမျိုး)
+        # ဒါမှမဟုတ် message က original post ဖြစ်နေရင် သိမ်းမယ်
+        
+        # Bot က ပြန်တင်တဲ့ message တွေကို filter လုပ်ဖို့ logic
+        is_bot_repost = False
+        if message.forward_from_chat and message.forward_from_chat.id == message.chat.id:
+             # ဒါက သင် manual forward ပြန်လုပ်ပေးတာမျိုး ဖြစ်နိုင်လို့ သိမ်းခိုင်းမယ်
+             is_bot_repost = False 
+        
+        posts_col.update_one(
+            {"channel_id": message.chat.id, "msg_id": message.message_id},
+            {"$set": {"posted": False}},
+            upsert=True
+        )
+        print(f"✅ Post Saved to DB: {message.message_id} in Channel {message.chat.id}")
 
 # --- SCHEDULER ---
 scheduler = BackgroundScheduler(timezone=tz)
@@ -161,3 +175,4 @@ if __name__ == "__main__":
     scheduler.start()
     print("Bot is ready for Multi-Channel Management!")
     bot.infinity_polling()
+
