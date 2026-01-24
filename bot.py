@@ -168,7 +168,40 @@ def set_config(message):
     except Exception as e:
         bot.reply_to(message, f"❌ Format: /set [channel_id] [count] [hours]\nError: {e}")
 
-@bot.channel_post_handler(func=lambda message: True)
+@bot.message_handler(commands=['list'])
+def list_channels(message):
+    if message.from_user.id != ADMIN_ID: return
+    
+    active_channels = list(channels_col.find({"active": True}))
+    if not active_channels:
+        return bot.reply_to(message, "⚠️ လက်ရှိမှာ Active ဖြစ်နေတဲ့ Channel မရှိသေးပါ။")
+
+    response_text = "📊 **Channel Status List:**\n\n"
+    
+    for ch in active_channels:
+        cid = ch['channel_id']
+        
+        # Database ထဲမှာ ရှိနေတဲ့ post အရေအတွက်တွေကို စစ်မယ်
+        total_posts = posts_col.count_documents({"channel_id": cid})
+        remaining_posts = posts_col.count_documents({"channel_id": cid, "posted": False})
+        posted_count = posts_col.count_documents({"channel_id": cid, "posted": True})
+        
+        # Setting တွေကို ယူမယ်
+        setting = settings_col.find_one({"channel_id": cid})
+        schedule = setting.get('hours', 'Not set') if setting else "Not set"
+        
+        response_text += (
+            f"🆔 ` {cid} `\n"
+            f"📝 Total Posts: {total_posts}\n"
+            f"⏳ Remaining: {remaining_posts}\n"
+            f"✅ Posted: {posted_count}\n"
+            f"⏰ Schedule: {schedule}\n"
+            f"--------------------------\n"
+        )
+
+    bot.send_message(message.chat.id, response_text, parse_mode="Markdown")
+
+@bot.channel_post_handler(func=lambda message: True, content_types=['text', 'photo', 'video', 'document'])
 def handle_channel_post(message):
     # ၁။ Channel ခွင့်ပြုချက် စစ်မယ်
     if not channels_col.find_one({"channel_id": message.chat.id}):
@@ -238,6 +271,7 @@ if __name__ == "__main__":
         
     # Bot ကို infinity loop ပတ်ထားမယ်
     bot.infinity_polling(timeout=60, long_polling_timeout=30)
+
 
 
 
