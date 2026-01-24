@@ -1,138 +1,155 @@
 import telebot
 import os
 import time
-from threading import Thread
+import threading
+import requests
+import pytz
 from flask import Flask
-from pymongo import MongoClient, ASCENDING
-from datetime import datetime, timedelta
+from pymongo import MongoClient
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 
-# --- CONFIGURATION ---
-# ပတ်ဝန်းကျင် Variable များမှ ဖတ်ယူခြင်း
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_ID = int(os.getenv('ADMIN_ID', 0)) # သင့် ID ကို integer အနေနဲ့ ထည့်ပါ
-MONGO_URL = os.getenv('MONGO_URL')
+# --- CONFIGURATIONS (Environment Variables မှ ယူမည်) ---
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+MONGO_URL = os.environ.get("MONGO_URL")
+ADMIN_ID = int(os.environ.get("ADMIN_ID"))
+RENDER_URL = os.environ.get("RENDER_URL")
 
 bot = telebot.TeleBot(BOT_TOKEN)
+app = Flask(__name__)
+tz = pytz.timezone('Asia/Yangon')
 
-try:
-    client = MongoClient(MONGO_URL, tlsAllowInvalidCertificates=True)
-    db = client['multichannel_autopost_db']
-    channels_col = db['channels']
-    posts_col = db['posts']
-    # Speed အတွက် Index ပေးခြင်း
-    posts_col.create_index([("channel_id", ASCENDING), ("is_posted", ASCENDING), ("msg_id", ASCENDING)])
-    print("✅ MongoDB Connected Successfully!")
-except Exception as e:
-    print(f"❌ MongoDB Connection Error: {e}")
+# MongoDB Setup
+client = MongoClient(MONGO_URL)
+db = client['multi_channel_autobot']
+settings_col = db['settings']
+posts_col = db['posts']
+sent_col = db['sent_messages']
 
-# --- FLASK WEB SERVER (Keep Alive) ---
-app = Flask('')
+# --- WEB SERVER FOR KEEP-ALIVE ---
 @app.route('/')
-def home(): return "Bot is running... 🚀"
+def index():
+    return "Bot is running perfectly!"
 
-def run_http():
-    app.run(host='0.0.0.0', port=int(os.getenv("PORT", 8080)))
+def run_flask():
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
 
-# --- HELPERS ---
-def save_post(channel_id, message_id):
-    c_id = str(channel_id)
-    # Post ရှိမရှိ အရင်စစ်ပြီးမှ အသစ်သွင်းမယ်
-    if not posts_col.find_one({"channel_id": c_id, "msg_id": message_id}):
-        posts_col.insert_one({
-            "channel_id": c_id, 
-            "msg_id": message_id, 
-            "is_posted": False,
-            "created_at": datetime.utcnow()
-        })
-        print(f"📥 Saved: Channel {c_id} | Msg {message_id}")
+def keep_alive():
+    while True:
+        try:
+            if RENDER_URL:
+                requests.get(RENDER_URL)
+            time.sleep(600) # ၁၀ မိနစ်တစ်ခါ Website ကို နိုးပေးသည်
+        except:
+            pass
 
-def get_next_post(channel_id):
-    c_id = str(channel_id)
-    # အဟောင်းဆုံး unposted post ကို ရှာမယ်
-    post = posts_col.find_one({"channel_id": c_id, "is_posted": False}, sort=[("msg_id", 1)])
-    
-    if not post:
-        # အားလုံး တင်ပြီးသွားရင် အစကပြန်စဖို့ Reset လုပ်မယ်
-        count = posts_col.count_documents({"channel_id": c_id})
-        if count > 0:
-            posts_col.update_many({"channel_id": c_id}, {"$set": {"is_posted": False}})
-            post = posts_col.find_one({"channel_id": c_id, "is_posted": False}, sort=[("msg_id", 1)])
-            print(f"🔄 Loop Reset for Channel: {c_id}")
-    return post
+# --- CORE LOGIC: POSTING & CLEANING ---
 
-# --- HANDLERS ---
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    bot.reply_to(message, "Bot is active! Use /add_channel [ID] to register.")
-
-@bot.message_handler(commands=['add_channel'])
-def add_channel(message):
-    if message.from_user.id != ADMIN_ID:
-        return bot.reply_to(message, "❌ You are not authorized.")
-    
-    try:
-        t_id = message.text.split()[1]
-        # Channel ID သည် -100 နှင့် စရမည်
-        channels_col.update_one(
-            {"channel_id": str(t_id)}, 
-            {"$set": {"active": True, "peak_hours": [9, 12, 15, 18, 21], "batch_size": 1}}, 
-            upsert=True
-        )
-        bot.reply_to(message, f"✅ Channel {t_id} register လုပ်ပြီးပါပြီ။")
-        print(f"➕ New Channel Added: {t_id}")
-    except Exception as e: 
-        bot.reply_to(message, "Usage: /add_channel -100123456789")
-
-@bot.channel_post_handler(content_types=['video', 'photo', 'document', 'text'])
-def auto_fetch(message):
-    # Bot ကိုယ်တိုင် ပြန်ပို့တာကို မသိမ်းအောင် စစ်မယ် (Loop မဖြစ်အောင်)
-    if message.forward_from_chat or message.forward_from:
+def auto_forward_job(channel_id):
+    setting = settings_col.find_one({"channel_id": channel_id})
+    if not setting:
         return
 
-    c_id = str(message.chat.id)
-    # Register လုပ်ထားတဲ့ channel ဟုတ်မဟုတ် database မှာ စစ်မယ်
-    if channels_col.find_one({"channel_id": c_id, "active": True}):
-        save_post(c_id, message.message_id)
-
-# --- ENGINE (BACKGROUND WORKER) ---
-def worker_loop():
-    last_h = -1
-    print("🤖 Worker Loop Started...")
-    while True:
-        # မြန်မာစံတော်ချိန် ချိန်ညှိခြင်း (UTC+6:30)
-        now = datetime.utcnow() + timedelta(hours=6, minutes=30)
-        curr_h, curr_m = now.hour, now.minute
-
-        # မိနစ် 0 မှာ အလုပ်လုပ်မယ်၊ တစ်နာရီ တစ်ကြိမ်ပဲ လုပ်မယ်
-        if curr_h != last_h and curr_m == 0:
-            active_channels = list(channels_col.find({"active": True}))
-            
-            for ch in active_channels:
-                if curr_h in ch.get('peak_hours', []):
-                    c_id = ch['channel_id']
-                    batch = ch.get('batch_size', 1)
-                    
-                    print(f"⏰ Peak Hour Reached for {c_id}. Sending {batch} post(s)...")
-                    
-                    for _ in range(batch):
-                        post = get_next_post(c_id)
-                        if post:
-                            try:
-                                # မူရင်း Channel ထဲကိုပဲ Forward ပြန်လုပ်မယ်
-                                bot.forward_message(c_id, c_id, post['msg_id'])
-                                posts_col.update_one({"_id": post['_id']}, {"$set": {"is_posted": True}})
-                                time.sleep(3) # Telegram Flood limit မမိအောင်
-                            except Exception as e:
-                                print(f"❌ Error forwarding for {c_id}: {e}")
-            
-            last_h = curr_h
-        
-        time.sleep(30) # ၃၀ စက္ကန့်တစ်ခါ loop ပတ်ပြီး အချိန်စစ်မယ်
-
-if __name__ == "__main__":
-    # Background Thread များ စတင်ခြင်း
-    Thread(target=run_http).start()
-    Thread(target=worker_loop, daemon=True).start()
+    post_count = setting.get("post_count", 1)
     
-    print("🚀 Bot is Polling...")
+    for _ in range(post_count):
+        # မတင်ရသေးသော post ကို ရှာသည်
+        next_post = posts_col.find_one({"channel_id": channel_id, "posted": False}, sort=[("msg_id", 1)])
+        
+        if next_post:
+            try:
+                # Forward လုပ်သည်
+                sent_msg = bot.forward_message(channel_id, channel_id, next_post['msg_id'])
+                
+                # DB မှာ status ပြောင်းသည်
+                posts_col.update_one({"_id": next_post["_id"]}, {"$set": {"posted": True}})
+                
+                # နောက်မှပြန်ဖျက်ရန် ID သိမ်းသည်
+                sent_col.insert_one({"channel_id": channel_id, "msg_id": sent_msg.message_id})
+                time.sleep(2) # Telegram Flood limit ကာကွယ်ရန်
+            except Exception as e:
+                print(f"Error in {channel_id}: {e}")
+        else:
+            # တင်စရာ Post မရှိတော့လျှင် (Cycle ပြည့်လျှင်) အဟောင်းများဖျက်ပြီး Reset လုပ်သည်
+            print(f"Cycle complete for {channel_id}. Starting Cleanup...")
+            sent_messages = sent_col.find({"channel_id": channel_id})
+            for msg in sent_messages:
+                try:
+                    bot.delete_message(channel_id, msg['msg_id'])
+                    time.sleep(1.2) # ဖျက်နှုန်း အရမ်းမမြန်စေရန်
+                except:
+                    pass
+            
+            sent_col.delete_many({"channel_id": channel_id})
+            posts_col.update_many({"channel_id": channel_id}, {"$set": {"posted": False}})
+            print(f"Channel {channel_id} reset success.")
+            break
+
+# --- ADMIN COMMANDS ---
+
+@bot.message_handler(commands=['set'])
+def set_config(message):
+    # Admin စစ်ဆေးခြင်း
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "⚠️ သင်သည် Admin မဟုတ်ပါ။")
+        return
+
+    try:
+        # Command format: /set 1 8,10,18
+        args = message.text.split()
+        count = int(args[1])
+        hours = args[2] 
+        channel_id = message.chat.id
+
+        settings_col.update_one(
+            {"channel_id": channel_id},
+            {"$set": {"post_count": count, "hours": hours}},
+            upsert=True
+        )
+        
+        setup_scheduler() # Scheduler ကို update လုပ်သည်
+        bot.reply_to(message, f"✅ Settings Updated!\nChannel: {channel_id}\nDaily Hours: {hours}\nPost per cycle: {count}")
+    except Exception:
+        bot.reply_to(message, "❌ Format မှားယွင်းနေပါသည်။\nဥပမာ - `/set 1 8,10,18,22`", parse_mode="Markdown")
+
+@bot.channel_post_handler(func=lambda message: True)
+def handle_channel_post(message):
+    # Admin က တင်လိုက်တဲ့ Original post များကို DB ထဲ သိမ်းသည်
+    if not message.forward_from_chat:
+        posts_col.update_one(
+            {"channel_id": message.chat.id, "msg_id": message.message_id},
+            {"$set": {"posted": False}},
+            upsert=True
+        )
+
+# --- SCHEDULER SETUP ---
+scheduler = BackgroundScheduler(timezone=tz)
+
+def setup_scheduler():
+    scheduler.remove_all_jobs()
+    all_settings = settings_col.find()
+    for setting in all_settings:
+        channel_id = setting['channel_id']
+        hours = setting['hours'].split(',')
+        for hour in hours:
+            try:
+                scheduler.add_job(
+                    auto_forward_job,
+                    CronTrigger(hour=int(hour), minute=0, timezone=tz),
+                    args=[channel_id],
+                    id=f"{channel_id}_{hour}"
+                )
+            except:
+                pass
+
+# --- STARTUP ---
+if __name__ == "__main__":
+    # Flask & Keep-alive ကို Background မှာ run မည်
+    threading.Thread(target=run_flask, daemon=True).start()
+    threading.Thread(target=keep_alive, daemon=True).start()
+    
+    setup_scheduler()
+    scheduler.start()
+    
+    print("Bot is polling and scheduler is active...")
     bot.infinity_polling()
