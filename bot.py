@@ -15,13 +15,33 @@ MONGO_URL = os.environ.get("MONGO_URL")
 ADMIN_ID = int(os.environ.get("ADMIN_ID"))
 RENDER_URL = os.environ.get("RENDER_URL")
 
+if not all([BOT_TOKEN, MONGO_URL, ADMIN_ID_RAW]):
+    print("❌ Critical Error: Missing Environment Variables!")
+    exit(1)
+
+ADMIN_ID = int(ADMIN_ID_RAW)
+
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 tz = pytz.timezone('Asia/Yangon')
 
 # --- DB & MODEL SETUP ---
 # Database connection ကို error handling နဲ့ သေသေချာချာ ချိတ်ဆက်ပါမယ်
-try:
+# --- DB & MODEL SETUP ---
+def get_database():
+    try:
+        # 5 second အတွင်း ချိတ်မရရင် timeout ဖြစ်အောင်လုပ်ထားပါတယ်
+        client = MongoClient(MONGO_URL, tls=True, tlsAllowInvalidCertificates=True, serverSelectionTimeoutMS=5000)
+        client.admin.command('ping') # တကယ် ချိတ်မိလား စမ်းသပ်တာပါ
+        return client['smart_multi_channel_bot']
+    except Exception as e:
+        print(f"❌ Database Connection Error: {e}")
+        return None
+
+db = get_database()
+if db is None:
+    exit(1) # DB ချိတ်မရရင် Bot ဆက် run လို့မရပါ
+    
     client = MongoClient(MONGO_URL, tls=True, tlsAllowInvalidCertificates=True, serverSelectionTimeoutMS=5000)
     db = client['smart_multi_channel_bot']
     channels_col = db['authorized_channels']
@@ -64,8 +84,16 @@ def auto_forward_job(channel_id):
                 posts_col.update_one({"_id": next_post["_id"]}, {"$set": {"posted": True}})
                 sent_col.insert_one({"channel_id": channel_id, "msg_id": sent_msg.message_id})
                 time.sleep(2)
+            except telebot.apihelper.ApiTelegramException as e:
+                if e.error_code == 429: # Rate limit မိတဲ့ error
+                    wait_time = e.result_json['parameters']['retry_after']
+                    print(f"⚠️ Rate limited. Sleeping for {wait_time}s")
+                    time.sleep(wait_time)
+                else:
+                    print(f"❌ Telegram API Error: {e}")
             except Exception as e:
-                print(f"Error: {e}")
+                print(f"❌ Unexpected Error: {e}")
+                
         else:
             # --- အားလုံး တင်ပြီးသွားရင် Cleanup လုပ်မည့်အပိုင်း ---
             # ချက်ချင်းမဖျက်ခင် 5 second ခဏစောင့်ပါမယ်။
@@ -237,11 +265,22 @@ def handle_channel_post(message):
     )
     print(f"📥 New Manual Post Captured: {message.message_id}")
 
+# Keep-alive function
+def keep_alive_ping():
+    if RENDER_URL:
+        try:
+            requests.get(RENDER_URL)
+            print("📡 Keep-alive: Ping sent to Render server.")
+        except:
+            pass
+
 # --- SCHEDULER ---
 scheduler = BackgroundScheduler(timezone=tz)
 
 def setup_scheduler():
     scheduler.remove_all_jobs()
+    if RENDER_URL:
+        scheduler.add_job(keep_alive_ping, 'interval', minutes=5)
     for s in settings_col.find():
         hours_str = s.get('hours', "")
         for hr in hours_str.split(','):
@@ -275,6 +314,7 @@ if __name__ == "__main__":
         
     # Bot ကို infinity loop ပတ်ထားမယ်
     bot.infinity_polling(timeout=60, long_polling_timeout=30)
+
 
 
 
