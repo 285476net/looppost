@@ -13,7 +13,7 @@ from telebot.apihelper import ApiTelegramException
 # --- CONFIGURATIONS ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MONGO_URL = os.environ.get("MONGO_URL")
-ADMIN_ID = int(os.environ.get("ADMIN_ID"))
+ADMIN_ID_RAW = os.environ.get("ADMIN_ID")
 RENDER_URL = os.environ.get("RENDER_URL")
 
 if not all([BOT_TOKEN, MONGO_URL, ADMIN_ID_RAW]):
@@ -216,3 +216,4 @@ if __name__ == "__main__":
     setup_scheduler()
     if not scheduler.running: scheduler.start()
     bot.infinity_polling(timeout=60, long_polling_timeout=30)
+
