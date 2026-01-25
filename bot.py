@@ -8,6 +8,7 @@ from flask import Flask
 from pymongo import MongoClient, ASCENDING
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from telebot.apihelper import ApiTelegramException
 
 # --- CONFIGURATIONS ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -20,17 +21,13 @@ if not all([BOT_TOKEN, MONGO_URL, ADMIN_ID_RAW]):
     exit(1)
 
 ADMIN_ID = int(ADMIN_ID_RAW)
-
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 tz = pytz.timezone('Asia/Yangon')
 
 # --- DB & MODEL SETUP ---
-# Database connection ကို error handling နဲ့ သေသေချာချာ ချိတ်ဆက်ပါမယ်
-# --- DB & MODEL SETUP ---
 def get_database():
     try:
-        # 5 second အတွင်း ချိတ်မရရင် timeout ဖြစ်အောင်လုပ်ထားပါတယ်
         client = MongoClient(MONGO_URL, tls=True, tlsAllowInvalidCertificates=True, serverSelectionTimeoutMS=5000)
         client.admin.command('ping') # တကယ် ချိတ်မိလား စမ်းသပ်တာပါ
         return client['smart_multi_channel_bot']
@@ -42,21 +39,20 @@ db = get_database()
 if db is None:
     exit(1) # DB ချိတ်မရရင် Bot ဆက် run လို့မရပါ
     
-    client = MongoClient(MONGO_URL, tls=True, tlsAllowInvalidCertificates=True, serverSelectionTimeoutMS=5000)
-    db = client['smart_multi_channel_bot']
-    channels_col = db['authorized_channels']
-    settings_col = db['settings']
-    posts_col = db['posts']
-    sent_col = db['sent_messages']
+channels_col = db['authorized_channels']
+settings_col = db['settings']
+posts_col = db['posts']
+sent_col = db['sent_messages']
     
-    # Query ပိုမြန်စေဖို့ Index တွေ သတ်မှတ်ထားပါမယ်
-    posts_col.create_index([("channel_id", ASCENDING), ("msg_id", ASCENDING)])
-    posts_col.create_index([("posted", ASCENDING)])
-except Exception as e:
-    print(f"❌ Database Connection Error: {e}")
+posts_col.create_index([("channel_id", ASCENDING), ("msg_id", ASCENDING)])
+posts_col.create_index([("posted", ASCENDING)])
 
-# Global Bot Info (bot.infinity_polling စတင်ချိန်မှ ယူပါမယ်)
-BOT_INFO = None
+# --- DECORATOR ---
+def admin_only(func):
+    def wrapper(message):
+        if message.from_user.id == ADMIN_ID:
+            return func(message)
+    return wrapper
 
 # --- WEB SERVER ---
 @app.route('/')
@@ -74,7 +70,6 @@ def auto_forward_job(channel_id):
     post_count = setting.get("post_count", 1)
     
     for _ in range(post_count):
-        # တင်ရန်ကျန်သေးသော Post ကို ယူသည်
         next_post = posts_col.find_one({"channel_id": channel_id, "posted": False}, sort=[("msg_id", 1)])
         
         if next_post:
@@ -84,22 +79,16 @@ def auto_forward_job(channel_id):
                 posts_col.update_one({"_id": next_post["_id"]}, {"$set": {"posted": True}})
                 sent_col.insert_one({"channel_id": channel_id, "msg_id": sent_msg.message_id})
                 time.sleep(2)
-            except telebot.apihelper.ApiTelegramException as e:
-                if e.error_code == 429: # Rate limit မိတဲ့ error
+            except ApiTelegramException as e:
+                if e.error_code == 429:
                     wait_time = e.result_json['parameters']['retry_after']
-                    print(f"⚠️ Rate limited. Sleeping for {wait_time}s")
                     time.sleep(wait_time)
-                else:
-                    print(f"❌ Telegram API Error: {e}")
+                else: print(f"❌ API Error: {e}")
             except Exception as e:
-                print(f"❌ Unexpected Error: {e}")
+                print(f"❌ Error: {e}")
                 
         else:
-            # --- အားလုံး တင်ပြီးသွားရင် Cleanup လုပ်မည့်အပိုင်း ---
-            # ချက်ချင်းမဖျက်ခင် 5 second ခဏစောင့်ပါမယ်။
-            # ဒါမှ နောက်ဆုံးတင်လိုက်တဲ့ message ကို Listener က Bot တင်တာလို့ သေချာမှတ်မိမှာပါ
             time.sleep(5) 
-
             sent_messages = list(sent_col.find({"channel_id": channel_id}))
             if not sent_messages:
                 posts_col.update_many({"channel_id": channel_id}, {"$set": {"posted": False}})
@@ -121,71 +110,48 @@ def auto_forward_job(channel_id):
 # --- ADMIN COMMANDS ---
 
 @bot.message_handler(commands=['fetch'])
+@admin_only
 def fetch_old_posts(message):
-    if message.from_user.id != ADMIN_ID: return
     try:
         args = message.text.split()
-        if len(args) < 4:
-            return bot.reply_to(message, "❌ Format: /fetch [channel_id] [start_id] [end_id]")
-            
-        target_cid = int(args[1])
-        start_id = int(args[2])
-        end_id = int(args[3])
+        if len(args) < 4: return bot.reply_to(message, "❌ Format: /fetch [channel_id] [start_id] [end_id]")
+        target_cid, start_id, end_id = int(args[1]), int(args[2]), int(args[3])
 
-        # Range အရမ်းများရင် Bot Crash ဖြစ်နိုင်လို့ ကန့်သတ်ပေးတာ ပိုကောင်းပါတယ်
-        if (end_id - start_id) > 1000:
-            return bot.reply_to(message, "⚠️ တစ်ခါ fetch ရင် message ၁၀၀၀ ထက် မပိုသင့်ပါ။")
-
-        status_msg = bot.reply_to(message, f"⌛ Channel {target_cid} မှ Post များကို စတင်စစ်ဆေးနေသည်...")
+        status_msg = bot.reply_to(message, f"⌛ Processing {target_cid}...")
         count = 0
 
         for msg_id in range(start_id, end_id + 1):
-            if sent_col.find_one({"channel_id": target_cid, "msg_id": msg_id}):
-                print(f"⏭️ Skipping Bot's own post ID: {msg_id}")
-                continue 
-            # ------------------------------------
             try:
-                # Message ရှိမရှိ စစ်ရန် Admin ဆီ ယာယီ forward ကြည့်ခြင်း
-                temp_msg = bot.forward_message(ADMIN_ID, target_cid, msg_id, disable_notification=True)
-                
-                # Forwarded source မရှိမှ (သို့) ကိုယ့် channel ကိုယ်ပြန်တင်ထားတာမှ သိမ်းမည်
-                if not temp_msg.forward_from_chat or temp_msg.forward_from_chat.id == target_cid:
-                    posts_col.update_one(
-                        {"channel_id": target_cid, "msg_id": msg_id},
-                        {"$set": {"posted": False}},
-                        upsert=True
-                    )
-                    count += 1
-                
+                temp_msg = bot.forward_message(ADMIN_ID, target_cid, msg_id)
+                posts_col.update_one({"channel_id": target_cid, "msg_id": msg_id}, {"$set": {"posted": False}}, upsert=True)
+                count += 1
                 bot.delete_message(ADMIN_ID, temp_msg.message_id)
-                time.sleep(0.3) # Process ကို အနည်းငယ် ပိုမြန်စေရန် 0.3 သုံးထားပါသည်
-            except:
-                continue
-        
-        bot.edit_message_text(f"✅ လုပ်ဆောင်ချက် ပြီးဆုံးပါပြီ!\nPost အသစ် {count} ခုကို Database ထဲ သိမ်းဆည်းပြီးပါပြီ။", message.chat.id, status_msg.message_id)
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error: {str(e)}")
-
+                time.sleep(0.3)
+            except: continue
+        bot.edit_message_text(f"✅ Success! Saved {count} posts.", message.chat.id, status_msg.message_id)
+    except Exception as e: bot.reply_to(message, f"❌ Error: {e}")
+  
 @bot.message_handler(commands=['addchannel'])
+@admin_only
 def add_channel(message):
-    if message.from_user.id != ADMIN_ID: return
     try:
         cid = int(message.text.split()[1])
         channels_col.update_one({"channel_id": cid}, {"$set": {"active": True}}, upsert=True)
-        bot.reply_to(message, f"✅ Channel {cid} ကို ခွင့်ပြုလိုက်ပါပြီ။")
-    except:
-        bot.reply_to(message, "❌ Format: /addchannel -100xxxxxxxx")
+        bot.reply_to(message, f"✅ Authorized: {cid}")
+    except: bot.reply_to(message, "❌ Use: /addchannel -100xxx")
 
 @bot.message_handler(commands=['set'])
+@admin_only
 def set_config(message):
-    if message.from_user.id != ADMIN_ID: return
     try:
         args = message.text.split()
+        if len(args) < 4:
+            return bot.reply_to(message, "❌ Format: /set [channel_id] [count] [hours]")
+            
         target_cid = int(args[1])
         count = int(args[2])
-        hours = args[3] # format: "9,12,15,21"
+        hours = args[3]
         
-        # Validation: နာရီ format မှန်မမှန် စစ်ဆေးခြင်း
         valid_hours = [h.strip() for h in hours.split(',') if h.strip().isdigit() and 0 <= int(h.strip()) <= 23]
         if not valid_hours:
             return bot.reply_to(message, "❌ နာရီ Format မှားနေပါသည်။ (ဥပမာ: 9,13,21)")
@@ -195,128 +161,58 @@ def set_config(message):
             {"$set": {"post_count": count, "hours": ",".join(valid_hours)}}, 
             upsert=True
         )
-        setup_scheduler() # Scheduler ကို update လုပ်မည်
+        setup_scheduler() # Setting ပြောင်းပြီးတာနဲ့ scheduler ကို update တန်းလုပ်ပေးမယ်
         bot.reply_to(message, f"✅ Setting အောင်မြင်ပါသည်။\nChannel: {target_cid}\nတစ်ခါတင်မည့်အရေအတွက်: {count}\nနာရီများ: {','.join(valid_hours)}")
     except Exception as e:
-        bot.reply_to(message, f"❌ Format: /set [channel_id] [count] [hours]\nError: {e}")
+        bot.reply_to(message, f"❌ Error: {e}")
 
 @bot.message_handler(commands=['list'])
+@admin_only
 def list_channels(message):
-    if message.from_user.id != ADMIN_ID: return
-    
     active_channels = list(channels_col.find({"active": True}))
-    if not active_channels:
-        return bot.reply_to(message, "⚠️ လက်ရှိမှာ Active ဖြစ်နေတဲ့ Channel မရှိသေးပါ။")
-
-    response_text = "📊 **Channel Status List:**\n\n"
-    
+    if not active_channels: return bot.reply_to(message, "⚠️ No active channels.")
+    res = "📊 **Status:**\n\n"
     for ch in active_channels:
         cid = ch['channel_id']
-        
-        # Database ထဲမှာ ရှိနေတဲ့ post အရေအတွက်တွေကို စစ်မယ်
-        total_posts = posts_col.count_documents({"channel_id": cid})
-        remaining_posts = posts_col.count_documents({"channel_id": cid, "posted": False})
-        posted_count = posts_col.count_documents({"channel_id": cid, "posted": True})
-        
-        # Setting တွေကို ယူမယ်
-        setting = settings_col.find_one({"channel_id": cid})
-        schedule = setting.get('hours', 'Not set') if setting else "Not set"
-        
-        response_text += (
-            f"🆔 ` {cid} `\n"
-            f"📝 Total Posts: {total_posts}\n"
-            f"⏳ Remaining: {remaining_posts}\n"
-            f"✅ Posted: {posted_count}\n"
-            f"⏰ Schedule: {schedule}\n"
-            f"--------------------------\n"
-        )
-
-    bot.send_message(message.chat.id, response_text, parse_mode="Markdown")
+        rem = posts_col.count_documents({"channel_id": cid, "posted": False})
+        res += f"🆔 `{cid}` | ⏳ Rem: {rem}\n"
+    bot.send_message(message.chat.id, res, parse_mode="Markdown")
 
 @bot.channel_post_handler(func=lambda message: True, content_types=['text', 'photo', 'video', 'document'])
 def handle_channel_post(message):
-    # ၁။ Channel ခွင့်ပြုချက် စစ်မယ်
-    if not channels_col.find_one({"channel_id": message.chat.id}):
-        return
-
-    # ၂။ Bot က အခုလေးတင် ပို့လိုက်တဲ့ Message ID ဟုတ်မဟုတ် Database မှာ စစ်မယ်
-    # Bot က copy_message လုပ်ပြီးတာနဲ့ sent_col ထဲကို ID ထည့်လိုက်တာမို့ 
-    # အဲ့ဒီ ID ရှိနေရင် Bot တင်တာလို့ သေချာပေါက် ပြောလို့ရပါတယ်။
-    is_bot_post = sent_col.find_one({"channel_id": message.chat.id, "msg_id": message.message_id})
-    if is_bot_post:
-        # Bot တင်တာဖြစ်တဲ့အတွက် Database ထဲ ထပ်မသိမ်းဘဲ ကျော်လိုက်မယ်
-        return
+    if not channels_col.find_one({"channel_id": message.chat.id}): return
+    if sent_col.find_one({"channel_id": message.chat.id, "msg_id": message.message_id}): return
+    if message.forward_from_chat and message.forward_from_chat.id != message.chat.id: return
     
-    # ၃။ Forward Filter (တခြား Channel ကလာရင် မသိမ်းဘူး)
-    if message.forward_from_chat and message.forward_from_chat.id != message.chat.id:
-        return
-
-    # ၄။ ရှိပြီးသား Message ID ဖြစ်နေရင် ထပ်မသိမ်းပါ
-    exists = posts_col.find_one({"channel_id": message.chat.id, "msg_id": message.message_id})
-    if exists:
-        return
-
-    # ၅။ တကယ်လို့ Bot ပို့တာလည်း မဟုတ်ဘူး၊ DB မှာလည်း မရှိသေးဘူးဆိုရင် 
-    # ဒါဟာ Owner (မင်း) ကိုယ်တိုင် အသစ်တင်လိုက်တဲ့ Post ဖြစ်လို့ သိမ်းလိုက်မယ်
     posts_col.update_one(
         {"channel_id": message.chat.id, "msg_id": message.message_id},
         {"$set": {"posted": False}},
         upsert=True
     )
-    print(f"📥 New Manual Post Captured: {message.message_id}")
 
 # Keep-alive function
 def keep_alive_ping():
     if RENDER_URL:
-        try:
-            requests.get(RENDER_URL)
-            print("📡 Keep-alive: Ping sent to Render server.")
-        except:
-            pass
+        try: requests.get(RENDER_URL)
+        except: pass
 
 # --- SCHEDULER ---
 scheduler = BackgroundScheduler(timezone=tz)
 
 def setup_scheduler():
     scheduler.remove_all_jobs()
-    if RENDER_URL:
-        scheduler.add_job(keep_alive_ping, 'interval', minutes=5)
+    if RENDER_URL: scheduler.add_job(keep_alive_ping, 'interval', minutes=5)
     for s in settings_col.find():
-        hours_str = s.get('hours', "")
-        for hr in hours_str.split(','):
+        for hr in s.get('hours', "").split(','):
             if hr.strip().isdigit():
                 try:
                     h_val = int(hr.strip())
-                    scheduler.add_job(
-                        auto_forward_job, 
-                        CronTrigger(hour=h_val, minute=0, timezone=tz), 
-                        args=[s['channel_id']], 
-                        id=f"{s['channel_id']}_{h_val}"
-                    )
+                    scheduler.add_job(auto_forward_job, CronTrigger(hour=h_val, minute=0, timezone=tz), args=[s['channel_id']])
                 except: pass
-    print("⏰ Scheduler synchronization complete.")
+    print("⏰ Scheduler Ready.")
 
-# --- MAIN EXECUTION ---
 if __name__ == "__main__":
-    # Flask ကို Thread နဲ့ Background မှာ ပတ်ထားမယ်
     threading.Thread(target=run_flask, daemon=True).start()
-    
-    # Bot အချက်အလက်ကို စတင်ရယူမယ်
-    try:
-        BOT_INFO = bot.get_me()
-        print(f"🤖 Bot @{BOT_INFO.username} is starting...")
-    except Exception as e:
-        print(f"❌ Failed to get bot info: {e}")
-
     setup_scheduler()
-    if not scheduler.running:
-        scheduler.start()
-        
-    # Bot ကို infinity loop ပတ်ထားမယ်
+    if not scheduler.running: scheduler.start()
     bot.infinity_polling(timeout=60, long_polling_timeout=30)
-
-
-
-
-
-
