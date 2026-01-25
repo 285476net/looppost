@@ -112,6 +112,10 @@ def fetch_old_posts(message):
         count = 0
 
         for msg_id in range(start_id, end_id + 1):
+            if sent_col.find_one({"channel_id": target_cid, "msg_id": msg_id}):
+                print(f"⏭️ Skipping Bot's own post ID: {msg_id}")
+                continue 
+            # ------------------------------------
             try:
                 # Message ရှိမရှိ စစ်ရန် Admin ဆီ ယာယီ forward ကြည့်ခြင်း
                 temp_msg = bot.forward_message(ADMIN_ID, target_cid, msg_id, disable_notification=True)
@@ -271,6 +275,7 @@ if __name__ == "__main__":
         
     # Bot ကို infinity loop ပတ်ထားမယ်
     bot.infinity_polling(timeout=60, long_polling_timeout=30)
+
 
 
 
