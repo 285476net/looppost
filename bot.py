@@ -5,6 +5,7 @@ import threading
 import requests
 import pytz
 from flask import Flask
+from datetime import datetime, timedelta
 from pymongo import MongoClient, ASCENDING
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -48,6 +49,11 @@ def run_flask():
 
 # --- POSTING & CLEANING ---
 def auto_forward_job(channel_id):
+    # သက်တမ်းကုန်နေရင် ဘာမှမလုပ်ဘဲ ရပ်မယ်
+    if is_expired(channel_id):
+        print(f"⚠️ Service Expired for {channel_id}")
+        return
+        
     setting = settings_col.find_one({"channel_id": channel_id})
     if not setting: return
     
@@ -91,6 +97,50 @@ def auto_forward_job(channel_id):
             break
             
 # --- ADMIN COMMANDS ---
+
+# --- EXPIRY CHECK FUNCTION ---
+def is_expired(channel_id):
+    channel = channels_col.find_one({"channel_id": channel_id})
+    if not channel or "expiry_date" not in channel:
+        return True # သတ်မှတ်မထားရင် service မပေးဘူး
+    
+    expiry_date = channel["expiry_date"]
+    if datetime.now(tz) > expiry_date.astimezone(tz):
+        return True # သက်တမ်းကုန်သွားပြီ
+    return False
+
+# --- ADD/REMOVE CHANNEL COMMANDS ---
+
+@bot.message_handler(commands=['remchannel'])
+def remove_channel(message):
+    if message.from_user.id != ADMIN_ID: return
+    try:
+        cid = int(message.text.split()[1])
+        channels_col.delete_one({"channel_id": cid})
+        settings_col.delete_one({"channel_id": cid}) # Setting ပါ တစ်ခါတည်းဖျက်မယ်
+        bot.reply_to(message, f"🗑 Channel {cid} ကို စနစ်ထဲမှ ဖျက်ထုတ်လိုက်ပါပြီ။")
+    except:
+        bot.reply_to(message, "❌ Format: /remchannel -100xxxxxxxx")
+
+@bot.message_handler(commands=['setexpire'])
+def set_expiry(message):
+    if message.from_user.id != ADMIN_ID: return
+    try:
+        args = message.text.split()
+        cid = int(args[1])
+        days = int(args[2])
+        
+        expire_at = datetime.now(tz) + timedelta(days=days)
+        channels_col.update_one(
+            {"channel_id": cid}, 
+            {"$set": {"active": True, "expiry_date": expire_at}}, 
+            upsert=True
+        )
+        
+        readable_date = expire_at.strftime('%Y-%m-%d %H:%M:%S')
+        bot.reply_to(message, f"⏳ Channel {cid} အတွက် သက်တမ်းကို {days} ရက် တိုးပေးလိုက်ပါပြီ။\nကုန်ဆုံးမည့်ရက်: {readable_date}")
+    except:
+        bot.reply_to(message, "❌ Format: /setexpire [channel_id] [days]\nဥပမာ: /setexpire -100123 30")
 
 @bot.message_handler(commands=['fetch'])
 def fetch_old_posts(message):
@@ -184,7 +234,9 @@ def list_channels(message):
     
     for ch in active_channels:
         cid = ch['channel_id']
-        
+        expiry = ch.get('expiry_date', 'No Date')
+        if expiry != 'No Date':
+            expiry = expiry.strftime('%Y-%m-%d')
         # Database ထဲမှာ ရှိနေတဲ့ post အရေအတွက်တွေကို စစ်မယ်
         total_posts = posts_col.count_documents({"channel_id": cid})
         remaining_posts = posts_col.count_documents({"channel_id": cid, "posted": False})
@@ -200,6 +252,7 @@ def list_channels(message):
             f"⏳ Remaining: {remaining_posts}\n"
             f"✅ Posted: {posted_count}\n"
             f"⏰ Schedule: {schedule}\n"
+            f"📅 Expire: {expiry}\n"
             f"--------------------------\n"
         )
 
@@ -275,5 +328,6 @@ if __name__ == "__main__":
         
     # Bot ကို infinity loop ပတ်ထားမယ်
     bot.infinity_polling(timeout=60, long_polling_timeout=30)
+
 
 
