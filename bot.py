@@ -47,6 +47,23 @@ def index():
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
 
+def start_keep_alive():
+    while True:
+        try:
+            if RENDER_URL:
+                # ကိုယ့် URL ကိုယ်ပြန် Ping မယ်
+                response = requests.get(RENDER_URL)
+                if response.status_code == 200:
+                    print(f"✅ Keep-alive ping sent to {RENDER_URL}")
+            else:
+                print("⚠️ RENDER_URL Environment Variable မထည့်ရသေးပါ")
+        except Exception as e:
+            print(f"❌ Keep-alive ping failed: {e}")
+        
+        # ၁၀ မိနစ် (600 seconds) တစ်ခါ နိုးပါမယ်
+        time.sleep(600)
+# -----------------------------
+
 # --- POSTING & CLEANING ---
 def auto_forward_job(channel_id):
     # သက်တမ်းကုန်နေရင် ဘာမှမလုပ်ဘဲ ရပ်မယ်
@@ -314,6 +331,10 @@ def setup_scheduler():
 if __name__ == "__main__":
     # Flask ကို Thread နဲ့ Background မှာ ပတ်ထားမယ်
     threading.Thread(target=run_flask, daemon=True).start()
+    
+    # --- ဒီစာကြောင်းလေး ထပ်ဖြည့်ပါ ---
+    threading.Thread(target=start_keep_alive, daemon=True).start()
+    # --------------------------------
     
     # Bot အချက်အလက်ကို စတင်ရယူမယ်
     try:
