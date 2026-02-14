@@ -260,28 +260,29 @@ def list_channels(message):
         remaining_posts = posts_col.count_documents({"channel_id": cid, "posted": False})
         posted_count = posts_col.count_documents({"channel_id": cid, "posted": True})
         
-        # Settings
+        # Settings & Schedule
         setting = settings_col.find_one({"channel_id": cid})
         schedule = setting.get('hours', 'Not set') if setting else "Not set"
         
-        # --- NEW CODE: Get Channel Name & Link ---
+        # --- NEW CODE: Get Post Count (Batch Size) ---
+        # Setting မရှိသေးရင် default 1 လို့ထားမယ်
+        batch_size = setting.get('post_count', 1) if setting else 1
+        # ---------------------------------------------
+
+        # Get Channel Name & Link
         try:
             chat_info = bot.get_chat(cid)
             chat_title = chat_info.title
             
             if chat_info.username:
-                # Public Channel ဖြစ်ရင် username နဲ့ link လုပ်မယ်
                 chat_link = f"https://t.me/{chat_info.username}"
             elif chat_info.invite_link:
-                # Private Channel ဖြစ်ပြီး Link ရှိရင် ယူမယ်
                 chat_link = chat_info.invite_link
             else:
-                chat_link = "No Link Available"
-        except Exception as e:
-            # Bot ကို channel ထဲက ကန်လိုက်ရင် (သို့) error တက်ရင်
-            chat_title = "Unknown/Error"
-            chat_link = "Bot might be kicked"
-        # ------------------------------------------
+                chat_link = "No Link"
+        except:
+            chat_title = "Unknown"
+            chat_link = "Error/Kicked"
 
         response_text += (
             f"🆔 `{cid}`\n"
@@ -289,13 +290,12 @@ def list_channels(message):
             f"🔗 Link: {chat_link}\n"
             f"📝 Total: {total_posts} | ✅ Sent: {posted_count}\n"
             f"⏳ Left: {remaining_posts}\n"
-            f"⏰ Time: {schedule}\n"
+            f"🚀 Batch Size: {batch_size} (posts per run)\n"  # ဒီနေရာမှာ ထည့်ပေးလိုက်ပါတယ်
+            f"⏰ Schedule: {schedule}\n"
             f"📅 Expire: {expiry}\n"
             f"--------------------------\n"
         )
 
-    # Message ရှည်လွန်းရင် error တက်တတ်လို့ (4096 chars limit) ဖြတ်ပို့တာ ပိုကောင်းပေမယ့်
-    # လောလောဆယ် ရိုးရိုးပဲ ပြန်ပို့ထားပါတယ်
     try:
         bot.send_message(message.chat.id, response_text, parse_mode="Markdown", disable_web_page_preview=True)
     except Exception as e:
@@ -375,6 +375,7 @@ if __name__ == "__main__":
         
     # Bot ကို infinity loop ပတ်ထားမယ်
     bot.infinity_polling(timeout=60, long_polling_timeout=30)
+
 
 
 
