@@ -88,7 +88,12 @@ def auto_forward_job(channel_id):
                 sent_col.insert_one({"channel_id": channel_id, "msg_id": sent_msg.message_id})
                 time.sleep(2)
             except Exception as e:
-                print(f"Error: {e}")
+                print(f"❌ Error copying msg_id {next_post['msg_id']} in channel {channel_id}: {e}")
+                
+                # --- ဒီနေရာမှာ အောက်က စာကြောင်းကို အသစ်ထပ်ဖြည့်ပါ ---
+                # Error တက်တဲ့ (ဥပမာ-ဖျက်လိုက်တဲ့) Post ကို Database ကနေ ဖျက်ထုတ်လိုက်ပါမယ်။
+                # ဒါမှ ဒီ Post မှာတင် ရပ်မနေဘဲ နောက် Post တွေကို ဆက်တင်မှာ ဖြစ်ပါတယ်။
+                posts_col.delete_one({"_id": next_post["_id"]})
         else:
             # --- အားလုံး တင်ပြီးသွားရင် Cleanup လုပ်မည့်အပိုင်း ---
             # ချက်ချင်းမဖျက်ခင် 5 second ခဏစောင့်ပါမယ်။
@@ -375,6 +380,7 @@ if __name__ == "__main__":
         
     # Bot ကို infinity loop ပတ်ထားမယ်
     bot.infinity_polling(timeout=60, long_polling_timeout=30)
+
 
 
 
